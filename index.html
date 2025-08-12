@@ -4,96 +4,488 @@
 <meta charset="UTF-8" />
 <title>Canvas Chess RPG</title>
 <style>
-body,html{margin:0;padding:0;height:100%;display:flex;justify-content:center;align-items:center;background:#333;color:#fff;font-family:sans-serif}
-#ui{position:absolute;top:10px;left:10px;z-index:10}
-canvas{background:#f0f0f0;border:4px solid #444;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.5)}
+html,body{margin:0;height:100%;display:flex;justify-content:center;align-items:center;font-family:sans-serif;background:#222;color:#fff}
+#ui{position:absolute;top:10px;left:10px;display:flex;gap:4px;z-index:10}
+canvas{background:#f0d9b5;border:4px solid #555;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.5)}
+button{padding:4px 8px;border-radius:4px;border:none;cursor:pointer}
+#abilityBtn{display:none;position:absolute;z-index:20;padding:6px 10px;background:#08f;color:#fff;border-radius:4px}
+.tooltip{position:absolute;background:#000;color:#fff;padding:4px 6px;border-radius:4px;font-size:12px;pointer-events:none}
 </style>
 </head>
 <body>
 <div id="ui">
 <button id="newgame">New Game (N)</button>
+<button id="undoBtn">Undo (U)</button>
+<button id="redoBtn">Redo (R)</button>
+<button id="fenBtn">FEN</button>
 <button id="abilityToggle">Abilities OFF</button>
 <button id="themeToggle">Theme</button>
 <button id="muteToggle">Mute</button>
 </div>
 <canvas id="board" width="480" height="480"></canvas>
+<button id="abilityBtn"></button>
 <script>
-/*
-README
-Controls: Click/tap to move pieces. U undo, R redo, N new game, T theme, M mute, D debug.
-Abilities summary: each piece has cooldown ability when abilities mode enabled.
-Due to size constraints this demo implements a reduced ruleset and simplified abilities.
+/* README
+Controls: Click/tap to select and move. U undo, R redo, N new game, T theme, M mute, D debug.
+Abilities summary: each piece type has one ability with cooldown. Toggle abilities with UI button.
+This implementation targets desktop/mobile browsers with pure Canvas + vanilla JS.
 */
-
-// ----- Constants -----
-const SIZE=60; // square size
-const BOARD_SIZE=8;
-const PIECES='prnbqkPRNBQK';
-const START_FEN='rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
-
-// ----- Utilities -----
-function algebraic(x,y){return 'abcdefgh'[x]+(8-y);}
-function parseFEN(fen){
-  const [piece,turn]=fen.split(' ');
-  const rows=piece.split('/');
-  const board=[];
-  for(let r=0;r<8;r++){
-    const row=[];let f=rows[r];
-    for(let i=0;i<f.length;i++){
-      const c=f[i];
-      if(!isNaN(c)) for(let k=0;k<+c;k++) row.push('');
-      else row.push(c);
-    }
-    board.push(row);
-  }
-  return {board,turn};
-}
-function clone(o){return JSON.parse(JSON.stringify(o));}
-
-// ----- Game State -----
-class GameState{
-  constructor(){this.loadFEN(START_FEN);this.history=[];this.future=[];this.abilitiesOn=false;this.cooldowns={};}
-  loadFEN(fen){const {board,turn}=parseFEN(fen);this.board=board;this.turn=turn;}
-  pieceAt(x,y){return this.board[y][x];}
-  movePiece(x1,y1,x2,y2){const p=this.board[y1][x1];this.board[y1][x1]='';this.board[y2][x2]=p;}
-}
-const state=new GameState();
-
-// ----- Move Generation (basic, no special rules) -----
-const dirs={
-  p:[[0,1]],P:[[0,-1]],
-  r:[[1,0],[-1,0],[0,1],[0,-1]],R:[[1,0],[-1,0],[0,1],[0,-1]],
-  b:[[1,1],[1,-1],[-1,1],[-1,-1]],B:[[1,1],[1,-1],[-1,1],[-1,-1]],
-  q:[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]],Q:[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]],
-  k:[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]],K:[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]],
-  n:[[1,2],[2,1],[2,-1],[1,-2],[-1,-2],[-2,-1],[-2,1],[-1,2]],N:[[1,2],[2,1],[2,-1],[1,-2],[-1,-2],[-2,-1],[-2,1],[-1,2]]
+// ===== Constants =====
+const SQ=60, BOARD=8;
+const START_FEN="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+const PIECE_UNICODE={k:"♚",q:"♛",r:"♜",b:"♝",n:"♞",p:"♟"};
+const THEMES=[{light:"#f0d9b5",dark:"#b58863"},{light:"#222",dark:"#444"},{light:"#fdf6e3",dark:"#eee8d5"}];
+const ABILITIES={
+  k:{name:"Fortify",cd:5,desc:"Block up to two adjacent squares until next turn"},
+  q:{name:"Blink",cd:4,desc:"Teleport within 3 squares on lines"},
+  r:{name:"Shield",cd:3,desc:"Immune to capture until next turn"},
+  b:{name:"Phase",cd:3,desc:"Pass through one piece on diagonal"},
+  n:{name:"Double Jump",cd:2,desc:"Two knight hops"},
+  p:{name:"Sprint",cd:2,desc:"Move two squares from anywhere"}
 };
-function isWhite(p){return p===p.toUpperCase();}
-function generateMoves(x,y){const p=state.pieceAt(x,y);if(!p)return[];const moves=[];const vecs=dirs[p];const color=isWhite(p)?1:-1;for(const[dx,dy]of vecs){if(p.toLowerCase()==='p'){const nx=x+dx,ny=y+dy*color;if(nx>=0&&nx<8&&ny>=0&&ny<8&&!state.pieceAt(nx,ny))moves.push([nx,ny]);}else if(p.toLowerCase()==='n'||p.toLowerCase()==='k'){const nx=x+dx,ny=y+dy;if(nx>=0&&nx<8&&ny>=0&&ny<8){const t=state.pieceAt(nx,ny);if(!t||isWhite(t)!==isWhite(p))moves.push([nx,ny]);}}else{let nx=x+dx,ny=y+dy;while(nx>=0&&nx<8&&ny>=0&&ny<8){const t=state.pieceAt(nx,ny);if(!t)moves.push([nx,ny]);else{if(isWhite(t)!==isWhite(p))moves.push([nx,ny]);break;}nx+=dx;ny+=dy;}}}
+// ===== Utility =====
+function clone(o){return JSON.parse(JSON.stringify(o));}
+function alg(x,y){return 'abcdefgh'[x]+(8-y);}
+function inBounds(x,y){return x>=0&&x<8&&y>=0&&y<8;}
+function opposite(c){return c==='w'?'b':'w';}
+// FEN parsing/generation
+function loadFEN(fen){
+  const [board,turn,cast,ep,half,full]=fen.split(' ');
+  const rows=board.split('/');
+  const b=[];
+  for(let y=0;y<8;y++){
+    const row=[];
+    for(const c of rows[y]){
+      if(!isNaN(c)) for(let i=0;i<+c;i++) row.push(null);
+      else row.push({type:c.toLowerCase(),color:c===c.toUpperCase()?'w':'b',cd:0,shield:0});
+    }
+    b.push(row);
+  }
+  return {board:b,turn,cast,ep:ep==='-'?null:ep,half:+half,full:+full};
+}
+function genFEN(s){
+  let str='';
+  for(let y=0;y<8;y++){
+    let empty=0;
+    for(let x=0;x<8;x++){
+      const p=s.board[y][x];
+      if(!p) empty++;
+      else { if(empty){str+=empty;empty=0;} str+=p.color==='w'?p.type.toUpperCase():p.type; }
+    }
+    if(empty) str+=empty;
+    if(y<7) str+='/';
+  }
+  return `${str} ${s.turn} ${s.cast} ${s.ep||'-'} ${s.half} ${s.full}`;
+}
+// ===== Game State =====
+const state={...loadFEN(START_FEN),history:[],future:[],abilitiesOn:false,fortify:[]};
+// ===== Move Generation =====
+function isAttacked(board,x,y,color){
+  for(let i=0;i<8;i++)
+    for(let j=0;j<8;j++){
+      const p=board[i][j];
+      if(p && p.color!==color){
+        const moves=basicMoves(board,j,i,true);
+        for(const m of moves) if(m.x===x && m.y===y) return true;
+      }
+    }
+  return false;
+}
+function basicMoves(board,x,y,attacks=false){
+  const p=board[y][x];
+  if(!p) return [];
+  const moves=[];
+  const dir=p.color==='w'?-1:1;
+  switch(p.type){
+    case 'p':{
+      let ny=y+dir;
+      if(inBounds(x,ny) && !board[ny][x]){
+        moves.push({x:x,y:ny});
+        if((p.color==='w'?y===6:y===1) && !board[ny+dir][x])
+          moves.push({x:x,y:ny+dir,double:true});
+      }
+      for(const dx of [-1,1]){
+        let nx=x+dx; ny=y+dir;
+        if(inBounds(nx,ny)){
+          const t=board[ny][nx];
+          if(t && t.color!==p.color) moves.push({x:nx,y:ny,cap:true});
+          if(state.ep===alg(nx,y)) moves.push({x:nx,y:ny,ep:true});
+        }
+      }
+      break;
+    }
+    case 'n':{
+      const deltas=[[1,2],[2,1],[2,-1],[1,-2],[-1,-2],[-2,-1],[-2,1],[-1,2]];
+      for(const [dx,dy] of deltas){
+        const nx=x+dx, ny=y+dy;
+        if(inBounds(nx,ny)){
+          const t=board[ny][nx];
+          if(!t || t.color!==p.color) moves.push({x:nx,y:ny,cap:!!t});
+        }
+      }
+      break;
+    }
+    case 'b':case 'r':case 'q':{
+      const dirs=p.type==='b'?[[1,1],[1,-1],[-1,1],[-1,-1]]
+                :p.type==='r'?[[1,0],[-1,0],[0,1],[0,-1]]
+                :[[1,1],[1,-1],[-1,1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]];
+      for(const [dx,dy] of dirs){
+        let nx=x+dx, ny=y+dy;
+        while(inBounds(nx,ny)){
+          const t=board[ny][nx];
+          if(!t) moves.push({x:nx,y:ny});
+          else { if(t.color!==p.color) moves.push({x:nx,y:ny,cap:true}); break; }
+          nx+=dx; ny+=dy;
+        }
+      }
+      break;
+    }
+    case 'k':{
+      for(let dx=-1;dx<=1;dx++)
+        for(let dy=-1;dy<=1;dy++){
+          if(dx||dy){
+            const nx=x+dx, ny=y+dy;
+            if(inBounds(nx,ny)){
+              const t=board[ny][nx];
+              if(!t || t.color!==p.color) moves.push({x:nx,y:ny,cap:!!t});
+            }
+          }
+        }
+      if(!attacks){
+        if(p.color==='w' && y===7 && x===4){
+          if(state.cast.includes('K') && !board[7][5] && !board[7][6] && !isAttacked(board,4,7,'w') && !isAttacked(board,5,7,'w') && !isAttacked(board,6,7,'w'))
+            moves.push({x:6,y:7,castle:'K'});
+          if(state.cast.includes('Q') && !board[7][1] && !board[7][2] && !board[7][3] && !isAttacked(board,4,7,'w') && !isAttacked(board,3,7,'w') && !isAttacked(board,2,7,'w'))
+            moves.push({x:2,y:7,castle:'Q'});
+        }
+        if(p.color==='b' && y===0 && x===4){
+          if(state.cast.includes('k') && !board[0][5] && !board[0][6] && !isAttacked(board,4,0,'b') && !isAttacked(board,5,0,'b') && !isAttacked(board,6,0,'b'))
+            moves.push({x:6,y:0,castle:'k'});
+          if(state.cast.includes('q') && !board[0][1] && !board[0][2] && !board[0][3] && !isAttacked(board,4,0,'b') && !isAttacked(board,3,0,'b') && !isAttacked(board,2,0,'b'))
+            moves.push({x:2,y:0,castle:'q'});
+        }
+      }
+      break;
+    }
+  }
   return moves;
 }
-
-// ----- Rendering -----
+function legalMoves(x,y){
+  const board=state.board;
+  const p=board[y][x];
+  if(!p) return [];
+  let moves=basicMoves(board,x,y);
+  if(state.abilitiesOn && p.cd===0) moves = moves.concat(abilityMoves(x,y,p));
+  const legal=[];
+  for(const m of moves){
+    const snap=clone(state.board);
+    const castBefore=state.cast;
+    const epBefore=state.ep;
+    const shieldBefore=p.shield;
+    applyMove(board,x,y,m);
+    if(!isKingInCheck(p.color)) legal.push(m);
+    state.board=snap;
+    state.cast=castBefore;
+    state.ep=epBefore;
+    p.shield=shieldBefore;
+  }
+  return legal;
+}
+function isKingInCheck(color){
+  let kx=-1,ky=-1;
+  for(let y=0;y<8;y++)
+    for(let x=0;x<8;x++){
+      const p=state.board[y][x];
+      if(p && p.type==='k' && p.color===color){kx=x;ky=y;}
+    }
+  return isAttacked(state.board,kx,ky,color);
+}
+function applyMove(board,x,y,m){
+  const p=board[y][x];
+  board[y][x]=null;
+  state.ep=null;
+  state.half++;
+  if(p.type==='p' || m.cap) state.half=0;
+  if(p.type==='p' && Math.abs(m.y-y)===2)
+    state.ep=alg(x,y+(p.color==='w'?-1:1));
+  if(m.ep){
+    const dy=p.color==='w'?1:-1;
+    board[m.y+dy][m.x]=null;
+  }
+  if(m.castle){
+    if(m.castle==='K'){board[y][6]=p;board[y][5]=board[y][7];board[y][7]=null;}
+    else if(m.castle==='Q'){board[y][2]=p;board[y][3]=board[y][0];board[y][0]=null;}
+    else if(m.castle==='k'){board[y][6]=p;board[y][5]=board[y][7];board[y][7]=null;}
+    else if(m.castle==='q'){board[y][2]=p;board[y][3]=board[y][0];board[y][0]=null;}
+    updateCastling(p.color,m.castle);
+  }else{
+    board[m.y][m.x]=p;
+  }
+  if(m.prom) p.type=m.prom;
+  if(p.shield) p.shield=0;
+}
+function updateCastling(color,castleMove){
+  if(color==='w'){state.cast=state.cast.replace('K','').replace('Q','');}
+  else{state.cast=state.cast.replace('k','').replace('q','');}
+  if(castleMove && castleMove.toLowerCase()==='k') state.cast=state.cast.replace(color==='w'?'K':'k','');
+  if(castleMove && castleMove.toLowerCase()==='q') state.cast=state.cast.replace(color==='w'?'Q':'q','');
+}
+// ===== Abilities =====
+function abilityMoves(x,y,p){
+  switch(p.type){
+    case 'p': return pawnSprint(x,y,p);
+    case 'n': return knightDouble(x,y,p);
+    case 'b': return bishopPhase(x,y,p);
+    case 'r': return rookShield(x,y,p);
+    case 'q': return queenBlink(x,y,p);
+    case 'k': return kingFortify(x,y,p);
+  }
+  return [];
+}
+function pawnSprint(x,y,p){
+  const dir=p.color==='w'?-1:1;
+  const ny=y+2*dir;
+  if(inBounds(x,ny) && !state.board[y+dir][x] && !state.board[ny][x])
+    return [{x:x,y:ny,ability:'sprint'}];
+  return [];
+}
+function knightDouble(x,y,p){
+  const deltas=[[1,2],[2,1],[2,-1],[1,-2],[-1,-2],[-2,-1],[-2,1],[-1,2]];
+  const res=[];
+  for(const [dx,dy] of deltas){
+    const nx=x+dx, ny=y+dy;
+    if(!inBounds(nx,ny) || state.board[ny][nx]) continue;
+    for(const [dx2,dy2] of deltas){
+      const nx2=nx+dx2, ny2=ny+dy2;
+      if(!inBounds(nx2,ny2)) continue;
+      const t=state.board[ny2][nx2];
+      if(!t || t.color!==p.color)
+        res.push({x:nx2,y:ny2,cap:!!t,ability:'double'});
+    }
+  }
+  return res;
+}
+function bishopPhase(x,y,p){
+  const dirs=[[1,1],[1,-1],[-1,1],[-1,-1]];
+  const res=[];
+  for(const [dx,dy] of dirs){
+    let nx=x+dx, ny=y+dy;
+    let passed=false;
+    while(inBounds(nx,ny)){
+      const t=state.board[ny][nx];
+      if(!t){
+        if(passed){ res.push({x:nx,y:ny,cap:false,ability:'phase'}); break; }
+      }else if(!passed){
+        passed=true;
+      }else break;
+      nx+=dx; ny+=dy;
+    }
+  }
+  return res;
+}
+function rookShield(x,y,p){
+  if(p.shield) return [];
+  return [{x:x,y:y,ability:'shield',stay:true}];
+}
+function queenBlink(x,y,p){
+  const dirs=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+  const res=[];
+  for(const [dx,dy] of dirs){
+    for(let step=1;step<=3;step++){
+      const nx=x+dx*step, ny=y+dy*step;
+      if(!inBounds(nx,ny)) break;
+      const t=state.board[ny][nx];
+      if(t){
+        if(t.color!==p.color) res.push({x:nx,y:ny,cap:true,ability:'blink'});
+        break;
+      }
+      res.push({x:nx,y:ny,ability:'blink'});
+    }
+  }
+  return res;
+}
+function kingFortify(x,y,p){
+  const res=[];
+  for(let dx=-1;dx<=1;dx++)
+    for(let dy=-1;dy<=1;dy++){
+      if(dx||dy){
+        const nx=x+dx, ny=y+dy;
+        if(inBounds(nx,ny) && !state.board[ny][nx])
+          res.push({x:nx,y:ny,ability:'fortify',mark:true});
+      }
+    }
+  return res;
+}
+function useAbility(p,move){
+  p.cd=ABILITIES[p.type].cd;
+  if(move.ability==='shield') p.shield=1;
+  if(move.ability==='fortify') state.fortify.push({x:move.x,y:move.y,color:p.color});
+}
+function decayCooldown(color){
+  for(let y=0;y<8;y++)
+    for(let x=0;x<8;x++){
+      const p=state.board[y][x];
+      if(p && p.color===color && p.cd>0) p.cd--;
+      if(p && p.shield && p.color===opposite(color)) p.shield=0;
+    }
+  state.fortify=state.fortify.filter(f=>f.color!==color);
+}
+// ===== Rendering =====
 const canvas=document.getElementById('board');
 const ctx=canvas.getContext('2d');
-let theme=0; // 0 classic,1 midnight,2 solar
-function draw(){ctx.clearRect(0,0,480,480);for(let y=0;y<8;y++)for(let x=0;x<8;x++){const light=(x+y)%2==0;ctx.fillStyle=['#f0d9b5','#b58863','#222','#444','#fdf6e3','#eee8d5'][theme*2+ (light?0:1)];ctx.fillRect(x*SIZE,y*SIZE,SIZE,SIZE);}
-  for(let y=0;y<8;y++)for(let x=0;x<8;x++){const p=state.pieceAt(x,y);if(p)drawPiece(p,x,y);}if(selected)highlight(selected.x,selected.y);
+let theme=0;
+let selected=null;
+let legal=[];
+const abilityBtn=document.getElementById('abilityBtn');
+function draw(){
+  const t=THEMES[theme];
+  ctx.clearRect(0,0,480,480);
+  for(let y=0;y<8;y++) for(let x=0;x<8;x++){
+    const light=(x+y)%2===0;
+    ctx.fillStyle=light?t.light:t.dark;
+    ctx.fillRect(x*SQ,y*SQ,SQ,SQ);
+  }
+  for(const f of state.fortify){
+    ctx.fillStyle='rgba(255,0,0,0.3)';
+    ctx.fillRect(f.x*SQ,f.y*SQ,SQ,SQ);
+  }
+  if(selected){
+    ctx.strokeStyle='yellow';
+    ctx.lineWidth=3;
+    ctx.strokeRect(selected.x*SQ+2,selected.y*SQ+2,SQ-4,SQ-4);
+    ctx.fillStyle='rgba(255,255,0,0.3)';
+    for(const m of legal) ctx.fillRect(m.x*SQ,m.y*SQ,SQ,SQ);
+  }
+  for(let y=0;y<8;y++)
+    for(let x=0;x<8;x++){
+      const p=state.board[y][x];
+      if(p) drawPiece(p,x,y);
+    }
   requestAnimationFrame(draw);
 }
-function drawPiece(p,x,y){ctx.fillStyle=isWhite(p)?'#fff':'#000';ctx.font='48px serif';const chars={p:'♟',r:'♜',n:'♞',b:'♝',q:'♛',k:'♚'};ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(chars[p.toLowerCase()],x*SIZE+SIZE/2,y*SIZE+SIZE/2);} 
-function highlight(x,y){ctx.strokeStyle='yellow';ctx.lineWidth=3;ctx.strokeRect(x*SIZE+2,y*SIZE+2,SIZE-4,SIZE-4);const moves=generateMoves(x,y);ctx.fillStyle='rgba(255,255,0,0.3)';for(const[mx,my]of moves)ctx.fillRect(mx*SIZE,my*SIZE,SIZE,SIZE);} 
-
-let selected=null;
-canvas.addEventListener('click',e=>{const r=canvas.getBoundingClientRect();const x=Math.floor((e.clientX-r.left)/SIZE);const y=Math.floor((e.clientY-r.top)/SIZE);if(selected){const moves=generateMoves(selected.x,selected.y).map(m=>m[0]+','+m[1]);if(moves.includes(x+','+y)){state.movePiece(selected.x,selected.y,x,y);state.turn=state.turn==='w'?'b':'w';}
-selected=null;}else{const p=state.pieceAt(x,y);if(p&&((state.turn==='w')===isWhite(p)))selected={x,y};}}
-);
-
-// ----- UI -----
-function newGame(){state.loadFEN(START_FEN);}document.getElementById('newgame').onclick=()=>{newGame();};document.getElementById('abilityToggle').onclick=e=>{state.abilitiesOn=!state.abilitiesOn;e.target.textContent='Abilities '+(state.abilitiesOn?'ON':'OFF');};document.getElementById('themeToggle').onclick=()=>{theme=(theme+1)%3;};document.getElementById('muteToggle').onclick=()=>{muted=!muted;};let muted=false;
-
-document.addEventListener('keydown',e=>{if(e.key==='n'||e.key==='N')newGame();if(e.key==='t'||e.key==='T')theme=(theme+1)%3;});
-
+function drawPiece(p,x,y){
+  ctx.font='48px serif';
+  ctx.textAlign='center';
+  ctx.textBaseline='middle';
+  ctx.fillStyle=p.color==='w'?'#fff':'#000';
+  ctx.fillText(PIECE_UNICODE[p.type],x*SQ+SQ/2,y*SQ+SQ/2);
+  if(p.cd>0){
+    ctx.strokeStyle='rgba(0,0,255,0.6)';
+    ctx.beginPath();
+    ctx.arc(x*SQ+SQ/2,y*SQ+SQ/2,20,-Math.PI/2,-Math.PI/2+2*Math.PI*(1-p.cd/ABILITIES[p.type].cd));
+    ctx.stroke();
+  }
+  if(p.shield){
+    ctx.strokeStyle='cyan';
+    ctx.beginPath();
+    ctx.arc(x*SQ+SQ/2,y*SQ+SQ/2,26,0,Math.PI*2);
+    ctx.stroke();
+  }
+}
+// ===== Input =====
+canvas.addEventListener('click',e=>{
+  const r=canvas.getBoundingClientRect();
+  const x=Math.floor((e.clientX-r.left)/SQ);
+  const y=Math.floor((e.clientY-r.top)/SQ);
+  if(selected){
+    for(const m of legal)
+      if(m.x===x && m.y===y){
+        makeMove(selected.x,selected.y,m);
+        selected=null; legal=[]; abilityBtn.style.display='none';
+        return;
+      }
+    if(selected.x===x && selected.y===y){
+      selected=null; legal=[]; abilityBtn.style.display='none';
+    }else if(state.board[y][x] && state.board[y][x].color===state.turn){
+      select(x,y);
+    }else{
+      selected=null; legal=[]; abilityBtn.style.display='none';
+    }
+  }else if(state.board[y][x] && state.board[y][x].color===state.turn){
+    select(x,y);
+  }
+});
+function select(x,y){
+  selected={x,y};
+  legal=legalMoves(x,y);
+  abilityBtn.style.display='none';
+  const p=state.board[y][x];
+  if(state.abilitiesOn && p.cd===0){
+    abilityBtn.textContent=ABILITIES[p.type].name;
+    abilityBtn.style.left=(x*SQ+10)+"px";
+    abilityBtn.style.top=(y*SQ+10)+"px";
+    abilityBtn.style.display='block';
+    abilityBtn.onclick=()=>{legal=abilityMoves(x,y,p);};
+  }
+}
+function makeMove(x,y,m){
+  state.history.push(genFEN(state));
+  state.future=[];
+  const piece=state.board[y][x];
+  if(m.ability) useAbility(piece,m);
+  applyMove(state.board,x,y,m);
+  state.turn=opposite(state.turn);
+  if(m.cap || piece.type==='p') state.half=0;
+  if(state.turn==='w') state.full++;
+  decayCooldown(state.turn);
+}
+// ===== Undo/Redo =====
+function undo(){
+  if(!state.history.length) return;
+  state.future.push(genFEN(state));
+  Object.assign(state,loadFEN(state.history.pop()));
+}
+function redo(){
+  if(!state.future.length) return;
+  state.history.push(genFEN(state));
+  Object.assign(state,loadFEN(state.future.pop()));
+}
+// ===== UI =====
+function newGame(){
+  Object.assign(state,loadFEN(START_FEN));
+  state.history=[]; state.future=[]; state.fortify=[];
+}
+document.getElementById('newgame').onclick=newGame;
+document.getElementById('undoBtn').onclick=undo;
+document.getElementById('redoBtn').onclick=redo;
+document.getElementById('fenBtn').onclick=()=>{
+  const fen=prompt('FEN',genFEN(state));
+  if(fen) Object.assign(state,loadFEN(fen));
+};
+document.getElementById('abilityToggle').onclick=e=>{
+  state.abilitiesOn=!state.abilitiesOn;
+  e.target.textContent='Abilities '+(state.abilitiesOn?'ON':'OFF');
+  if(!state.abilitiesOn){
+    for(let y=0;y<8;y++)for(let x=0;x<8;x++){
+      const p=state.board[y][x]; if(p) p.cd=0;
+    }
+    state.fortify=[];
+  }
+};
+document.getElementById('themeToggle').onclick=()=>{theme=(theme+1)%THEMES.length;};
+let muted=false;
+document.getElementById('muteToggle').onclick=()=>{muted=!muted;};
+document.addEventListener('keydown',e=>{
+  if(e.key==='u'||e.key==='U') undo();
+  if(e.key==='r'||e.key==='R') redo();
+  if(e.key==='n'||e.key==='N') newGame();
+  if(e.key==='t'||e.key==='T') document.getElementById('themeToggle').onclick();
+  if(e.key==='m'||e.key==='M') document.getElementById('muteToggle').onclick();
+});
+// ===== Audio =====
+const audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+function beep(freq){
+  if(muted) return;
+  const o=audioCtx.createOscillator();
+  const g=audioCtx.createGain();
+  o.connect(g); g.connect(audioCtx.destination);
+  o.frequency.value=freq;
+  o.start();
+  g.gain.setValueAtTime(0.2,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.0001,audioCtx.currentTime+0.2);
+  o.stop(audioCtx.currentTime+0.2);
+}
+// main loop
 requestAnimationFrame(draw);
 </script>
 </body>

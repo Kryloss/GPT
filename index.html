@@ -171,23 +171,24 @@ function basicMoves(board,x,y,attacks=false){
   return moves;
 }
 function legalMoves(x,y){
-  const board=state.board;
-  const p=board[y][x];
+  const p=state.board[y][x];
   if(!p) return [];
-  let moves=basicMoves(board,x,y);
+  let moves=basicMoves(state.board,x,y);
   if(state.abilitiesOn && p.cd===0) moves = moves.concat(abilityMoves(x,y,p));
   const legal=[];
   for(const m of moves){
     const snap=clone(state.board);
     const castBefore=state.cast;
     const epBefore=state.ep;
-    const shieldBefore=p.shield;
-    applyMove(board,x,y,m);
+    const halfBefore=state.half;
+    const fullBefore=state.full;
+    applyMove(state.board,x,y,m);
     if(!isKingInCheck(p.color)) legal.push(m);
     state.board=snap;
     state.cast=castBefore;
     state.ep=epBefore;
-    p.shield=shieldBefore;
+    state.half=halfBefore;
+    state.full=fullBefore;
   }
   return legal;
 }

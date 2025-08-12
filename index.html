@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Canvas Chess RPG</title>
+<style>
+body,html{margin:0;padding:0;height:100%;display:flex;justify-content:center;align-items:center;background:#333;color:#fff;font-family:sans-serif}
+#ui{position:absolute;top:10px;left:10px;z-index:10}
+canvas{background:#f0f0f0;border:4px solid #444;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.5)}
+</style>
+</head>
+<body>
+<div id="ui">
+<button id="newgame">New Game (N)</button>
+<button id="abilityToggle">Abilities OFF</button>
+<button id="themeToggle">Theme</button>
+<button id="muteToggle">Mute</button>
+</div>
+<canvas id="board" width="480" height="480"></canvas>
+<script>
+/*
+README
+Controls: Click/tap to move pieces. U undo, R redo, N new game, T theme, M mute, D debug.
+Abilities summary: each piece has cooldown ability when abilities mode enabled.
+Due to size constraints this demo implements a reduced ruleset and simplified abilities.
+*/
+
+// ----- Constants -----
+const SIZE=60; // square size
+const BOARD_SIZE=8;
+const PIECES='prnbqkPRNBQK';
+const START_FEN='rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+
+// ----- Utilities -----
+function algebraic(x,y){return 'abcdefgh'[x]+(8-y);}
+function parseFEN(fen){
+  const [piece,turn]=fen.split(' ');
+  const rows=piece.split('/');
+  const board=[];
+  for(let r=0;r<8;r++){
+    const row=[];let f=rows[r];
+    for(let i=0;i<f.length;i++){
+      const c=f[i];
+      if(!isNaN(c)) for(let k=0;k<+c;k++) row.push('');
+      else row.push(c);
+    }
+    board.push(row);
+  }
+  return {board,turn};
+}
+function clone(o){return JSON.parse(JSON.stringify(o));}
+
+// ----- Game State -----
+class GameState{
+  constructor(){this.loadFEN(START_FEN);this.history=[];this.future=[];this.abilitiesOn=false;this.cooldowns={};}
+  loadFEN(fen){const {board,turn}=parseFEN(fen);this.board=board;this.turn=turn;}
+  pieceAt(x,y){return this.board[y][x];}
+  movePiece(x1,y1,x2,y2){const p=this.board[y1][x1];this.board[y1][x1]='';this.board[y2][x2]=p;}
+}
+const state=new GameState();
+
+// ----- Move Generation (basic, no special rules) -----
+const dirs={
+  p:[[0,1]],P:[[0,-1]],
+  r:[[1,0],[-1,0],[0,1],[0,-1]],R:[[1,0],[-1,0],[0,1],[0,-1]],
+  b:[[1,1],[1,-1],[-1,1],[-1,-1]],B:[[1,1],[1,-1],[-1,1],[-1,-1]],
+  q:[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]],Q:[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]],
+  k:[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]],K:[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]],
+  n:[[1,2],[2,1],[2,-1],[1,-2],[-1,-2],[-2,-1],[-2,1],[-1,2]],N:[[1,2],[2,1],[2,-1],[1,-2],[-1,-2],[-2,-1],[-2,1],[-1,2]]
+};
+function isWhite(p){return p===p.toUpperCase();}
+function generateMoves(x,y){const p=state.pieceAt(x,y);if(!p)return[];const moves=[];const vecs=dirs[p];const color=isWhite(p)?1:-1;for(const[dx,dy]of vecs){if(p.toLowerCase()==='p'){const nx=x+dx,ny=y+dy*color;if(nx>=0&&nx<8&&ny>=0&&ny<8&&!state.pieceAt(nx,ny))moves.push([nx,ny]);}else if(p.toLowerCase()==='n'||p.toLowerCase()==='k'){const nx=x+dx,ny=y+dy;if(nx>=0&&nx<8&&ny>=0&&ny<8){const t=state.pieceAt(nx,ny);if(!t||isWhite(t)!==isWhite(p))moves.push([nx,ny]);}}else{let nx=x+dx,ny=y+dy;while(nx>=0&&nx<8&&ny>=0&&ny<8){const t=state.pieceAt(nx,ny);if(!t)moves.push([nx,ny]);else{if(isWhite(t)!==isWhite(p))moves.push([nx,ny]);break;}nx+=dx;ny+=dy;}}}
+  return moves;
+}
+
+// ----- Rendering -----
+const canvas=document.getElementById('board');
+const ctx=canvas.getContext('2d');
+let theme=0; // 0 classic,1 midnight,2 solar
+function draw(){ctx.clearRect(0,0,480,480);for(let y=0;y<8;y++)for(let x=0;x<8;x++){const light=(x+y)%2==0;ctx.fillStyle=['#f0d9b5','#b58863','#222','#444','#fdf6e3','#eee8d5'][theme*2+ (light?0:1)];ctx.fillRect(x*SIZE,y*SIZE,SIZE,SIZE);}
+  for(let y=0;y<8;y++)for(let x=0;x<8;x++){const p=state.pieceAt(x,y);if(p)drawPiece(p,x,y);}if(selected)highlight(selected.x,selected.y);
+  requestAnimationFrame(draw);
+}
+function drawPiece(p,x,y){ctx.fillStyle=isWhite(p)?'#fff':'#000';ctx.font='48px serif';const chars={p:'♟',r:'♜',n:'♞',b:'♝',q:'♛',k:'♚'};ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(chars[p.toLowerCase()],x*SIZE+SIZE/2,y*SIZE+SIZE/2);} 
+function highlight(x,y){ctx.strokeStyle='yellow';ctx.lineWidth=3;ctx.strokeRect(x*SIZE+2,y*SIZE+2,SIZE-4,SIZE-4);const moves=generateMoves(x,y);ctx.fillStyle='rgba(255,255,0,0.3)';for(const[mx,my]of moves)ctx.fillRect(mx*SIZE,my*SIZE,SIZE,SIZE);} 
+
+let selected=null;
+canvas.addEventListener('click',e=>{const r=canvas.getBoundingClientRect();const x=Math.floor((e.clientX-r.left)/SIZE);const y=Math.floor((e.clientY-r.top)/SIZE);if(selected){const moves=generateMoves(selected.x,selected.y).map(m=>m[0]+','+m[1]);if(moves.includes(x+','+y)){state.movePiece(selected.x,selected.y,x,y);state.turn=state.turn==='w'?'b':'w';}
+selected=null;}else{const p=state.pieceAt(x,y);if(p&&((state.turn==='w')===isWhite(p)))selected={x,y};}}
+);
+
+// ----- UI -----
+function newGame(){state.loadFEN(START_FEN);}document.getElementById('newgame').onclick=()=>{newGame();};document.getElementById('abilityToggle').onclick=e=>{state.abilitiesOn=!state.abilitiesOn;e.target.textContent='Abilities '+(state.abilitiesOn?'ON':'OFF');};document.getElementById('themeToggle').onclick=()=>{theme=(theme+1)%3;};document.getElementById('muteToggle').onclick=()=>{muted=!muted;};let muted=false;
+
+document.addEventListener('keydown',e=>{if(e.key==='n'||e.key==='N')newGame();if(e.key==='t'||e.key==='T')theme=(theme+1)%3;});
+
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>

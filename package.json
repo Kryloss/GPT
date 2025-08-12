@@ -1,0 +1,8 @@
+{
+  "name": "gpt-chess-game",
+  "version": "1.0.0",
+  "description": "Canvas chess game with RPG abilities",
+  "scripts": {
+    "test": "echo 'No tests defined'"
+  }
+}
